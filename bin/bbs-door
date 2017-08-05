@@ -35,15 +35,14 @@ def enter_door(doorname):
         raise Exception("no node")
 
     for tnt in range(0, 256, 2):
-        tntlock = open(os.path.join(CONFIG.run_dir, ".tnt{}.lock"), "a+")
-        fcntl.lockf(tntlock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        tntlock = open(os.path.join(CONFIG.run_dir, ".tnt{}.lock".format(tnt)), "a+")
         try:
-            fcntl.lockf(nodelock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break
+            fcntl.lockf(tntlock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             tntlock.close()
             tntlock = None
             continue
+        break
 
     if tntlock is None:
         raise Exception("no tnt")
