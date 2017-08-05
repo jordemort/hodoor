@@ -1,0 +1,136 @@
+#!/usr/bin/python3
+
+
+import fcntl, io, os, signal, shutil, subprocess, sys, tty
+from select import select
+from serial import Serial
+from serial.tools.miniterm import Miniterm
+from hodoor.config import CONFIG
+from hodoor.user import USER
+from hodoor.templates import TEMPLATES
+
+
+def enter_door(doorname):
+    if doorname not in CONFIG.doors:
+        raise Exception("no door")
+    door = CONFIG.doors[doorname]
+
+    doorlock = open(os.path.join(CONFIG.run_dir, ".{}.lock".format(doorname)), "a+")
+    fcntl.lockf(doorlock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    nodelock = None
+
+    for node in range(1, door.nodes + 1):
+        nodelock = open(os.path.join(CONFIG.run_dir, ".{}.{}.lock".format(doorname, node)), "a+")
+        try:
+            fcntl.lockf(nodelock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            nodelock.close()
+            nodelock = None
+            continue
+
+    if nodelock is None:
+        raise Exception("no node")
+
+    for tnt in range(0, 256, 2):
+        tntlock = open(os.path.join(CONFIG.run_dir, ".tnt{}.lock"), "a+")
+        fcntl.lockf(tntlock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            fcntl.lockf(nodelock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            tntlock.close()
+            tntlock = None
+            continue
+
+    if tntlock is None:
+        raise Exception("no tnt")
+
+    nodedir = os.path.join(CONFIG.run_dir, "{}.{}".format(doorname, node))
+    os.environ['BBS_DIR'] = nodedir
+
+    try:
+        shutil.rmtree(nodedir)
+    except FileNotFoundError:
+        pass
+    os.makedirs(os.path.join(nodedir, 'drives', 'd', 'doors'))
+    os.symlink(CONFIG.dos_dir, os.path.join(nodedir, 'drives', 'c'))
+    os.symlink(door.path, os.path.join(nodedir, 'drives', 'd', 'doors', doorname))
+
+    dosemurc = TEMPLATES.get_template("dosemurc.mako")
+    with open(os.path.join(nodedir, 'dosemurc'), 'w') as dosemurc_out:
+        dosemurc_out.write(dosemurc.render(nodedir=nodedir, modem_path="/dev/tnt{}".format(tnt + 1)))
+
+    doorsys = TEMPLATES.get_template("doorsys.mako")
+    with io.open(os.path.join(nodedir, 'drives', 'd', 'door.sys'), 'w', encoding='cp437', newline='\r\n') as doorsys_out:
+        doorsys_out.write(doorsys.render(username=USER.username, bps=door.bps,
+            location='Unknown', home_phone='312 555-1212', data_phone='312 555-1212',
+            times_on=1, last_called="03/23/81", uid=USER.uid))
+
+    batchfile = TEMPLATES.get_template("batchfile.mako")
+    with io.open(os.path.join(nodedir, 'drives', 'd', 'bbs.bat'), 'w', encoding='cp437', newline='\r\n') as batchfile_out:
+        batchfile_out.write(batchfile.render(doorname=doorname, command=door.door_command, exitemu=True))
+
+    tntty = Serial("/dev/tnt{}".format(tnt), door.bps, rtscts=True, timeout=0)
+
+    tmuxlock = open(os.path.join(CONFIG.run_dir, ".tmux.lock"), "a+")
+    signal.alarm(60)
+    fcntl.lockf(tmuxlock, fcntl.LOCK_EX)
+
+    if subprocess.run(['tmux', 'has']).returncode == 0:
+        tmuxcmd = 'new-window'
+    else:
+        tmuxcmd = 'new-session'
+
+    tmuxrun = " ; ".join([
+        "tmux set-window-option force-width 80",
+        "tmux set-window-option force-height 25",
+        "(echo $$ > {}/dosemu.pid && exec dosemu.bin -f {}/dosemurc)".format(nodedir, nodedir)
+    ])
+
+    subprocess.run(["tmux", tmuxcmd, "-d", tmuxrun], check=True)
+    signal.alarm(0)
+    fcntl.lockf(tmuxlock, fcntl.LOCK_UN)
+    tmuxlock.close()
+
+    tty.setraw(sys.stdin)
+    try:
+        os.set_blocking(sys.stdin.fileno(), False)
+        tntty.nonblocking()
+
+        while True:
+            rlist, wlist, xlist = select([sys.stdin, tntty], [], [sys.stdin, tntty], 0.5)
+            if len(xlist):
+                break
+            if tntty in rlist:
+                chunk = tntty.read(1024)
+                while len(chunk):
+                    sys.stdout.buffer.write(chunk)
+                    sys.stdout.buffer.flush()
+                    chunk = tntty.read(1024)
+            if not tntty.cd: break
+            if sys.stdin in rlist:
+                try:
+                    chunk = os.read(sys.stdin.fileno(), 1024)
+                    while len(chunk):
+                        tntty.write(chunk)
+                        chunk = os.read(sys.stdin.fileno(), 1024)
+                except BlockingIOError:
+                    pass
+    finally:
+        subprocess.run(['stty', 'sane'])
+
+if __name__ == "__main__":
+    #import time
+    #print(os.environ['TERM'])
+    #time.sleep(3)
+
+    #if os.environ['TERM'] != 'ansi':
+    #    if 'BBS_QODEM' in os.environ:
+    #        os.environ['TERM'] = 'ansi'
+    #    else:
+    #        os.environ['BBS_QODEM'] = "yes"
+    #        os.execlp('qodem', '--read-only', '--emulation', 'ANSI',
+    #            '--codepage', 'CP437', '--status-line', 'off', '-x', *sys.argv)
+
+    sys.exit(enter_door(sys.argv[1]))
