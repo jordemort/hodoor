@@ -4,7 +4,6 @@
 import fcntl, io, os, signal, shutil, subprocess, sys, tty
 from select import select
 from serial import Serial
-from serial.tools.miniterm import Miniterm
 from hodoor.config import CONFIG
 from hodoor.user import USER
 from hodoor.templates import TEMPLATES
