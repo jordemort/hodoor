@@ -14,6 +14,9 @@ def enter_door(doorname):
         raise Exception("no door")
     door = CONFIG.doors[doorname]
 
+    userlock = open(os.path.join(CONFIG.run_dir, ".{}.{}.lock".format(USER.username, doorname)), "a+")
+    fcntl.lockf(userlock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+
     doorlock = open(os.path.join(CONFIG.run_dir, ".{}.lock".format(doorname)), "a+")
     fcntl.lockf(doorlock, fcntl.LOCK_SH | fcntl.LOCK_NB)
     nodelock = None
